@@ -32,7 +32,9 @@ Download the APK from the
 - 🛡️ **VPN compatible.** Stay private on every connected device.
 - ⚙️ **Uses your existing hotspot.** No extra configuration required.
 - 🔌 **USB tethering.** Share over a USB cable alongside, or instead of, the
-  hotspot. Pick it under Settings → Tethering → USB tethering.
+  hotspot. Pick it under Settings → Tethering → USB tethering. On phones where
+  switching USB restarts ADB, see
+  [USB tethering and Shizuku](docs/usb-tethering.md).
 - 🙌 **No root.** Shizuku is all it needs.
 - 🎛️ **One tap away.** A quick settings tile starts and stops sharing from the
   notification shade.

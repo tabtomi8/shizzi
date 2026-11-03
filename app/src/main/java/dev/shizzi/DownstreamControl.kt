@@ -63,6 +63,59 @@ class DownstreamControl(private val context: Context) {
         return didStopAll
     }
 
+    /**
+     * Stops serving [interfaces] without touching the USB function, which stopping USB tethering
+     * would switch. An interface that is not serving already counts as stopped.
+     */
+    fun untetherInterfaces(interfaces: Collection<String>): Pair<Boolean, String> =
+        callOnInterfaces("untether", interfaces, isRetriedWhileBusy = false) { code ->
+            code == TETHER_ERROR_NO_ERROR || code == TETHER_ERROR_UNAVAIL_IFACE
+        }
+
+    /**
+     * Serves [interfaces] again. An interface only becomes available again a moment after it was
+     * untethered, so a request that finds it busy is repeated for a few seconds.
+     */
+    fun tetherInterfaces(interfaces: Collection<String>): Pair<Boolean, String> =
+        callOnInterfaces("tether", interfaces, isRetriedWhileBusy = true) { code ->
+            code == TETHER_ERROR_NO_ERROR
+        }
+
+    private fun callOnInterfaces(
+        methodName: String,
+        interfaces: Collection<String>,
+        isRetriedWhileBusy: Boolean,
+        isAccepted: (Int?) -> Boolean,
+    ): Pair<Boolean, String> {
+        val method = runCatching { managerClass.getMethod(methodName, String::class.java) }
+            .getOrElse { return false to "$methodName unavailable: ${it.message}" }
+
+        val rejected = interfaces
+            .map { name -> name to callOnInterface(method, name, isRetriedWhileBusy) }
+            .filterNot { (_, code) -> isAccepted(code) }
+
+        return when {
+            rejected.isEmpty() -> true to "$methodName ${interfaces.joinToString()} accepted"
+            else -> false to rejected.joinToString("; ") { (name, code) ->
+                "$methodName $name: ${describeTetherError(code)}"
+            }
+        }
+    }
+
+    private fun callOnInterface(
+        method: java.lang.reflect.Method,
+        name: String,
+        isRetriedWhileBusy: Boolean,
+    ): Int? {
+        val deadline = System.currentTimeMillis() + INTERFACE_BUSY_MS
+        while (true) {
+            val code = runCatching { method.invoke(tetheringManager, name) as? Int }.getOrNull()
+            val isBusy = code == TETHER_ERROR_UNAVAIL_IFACE
+            if (!isRetriedWhileBusy || !isBusy || System.currentTimeMillis() >= deadline) return code
+            Thread.sleep(INTERFACE_POLL_MS)
+        }
+    }
+
     fun startWifiTethering(): Pair<Boolean, String> = startTethering(TetheringType.WIFI)
 
     fun startTethering(type: TetheringType): Pair<Boolean, String> {
@@ -195,5 +248,9 @@ class DownstreamControl(private val context: Context) {
         const val SUCCESS = "onTetheringStarted"
         const val STOP_SETTLE_MS = 3_000L
         const val START_TIMEOUT_MS = 15_000L
+        const val INTERFACE_BUSY_MS = 5_000L
+        const val INTERFACE_POLL_MS = 250L
+        const val TETHER_ERROR_NO_ERROR = 0
+        const val TETHER_ERROR_UNAVAIL_IFACE = 4
     }
 }

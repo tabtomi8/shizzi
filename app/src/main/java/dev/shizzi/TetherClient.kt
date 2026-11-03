@@ -2,14 +2,17 @@ package dev.shizzi
 
 import android.content.ComponentName
 import android.content.ServiceConnection
+import android.os.DeadObjectException
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 
@@ -102,6 +105,14 @@ class TetherClient {
 
     private var deathRecipient: IBinder.DeathRecipient? = null
 
+    /**
+     * True while a start that brings USB tethering up is running. Switching the USB function can
+     * take the shell process down with it, which that start recovers from itself, so it is not a
+     * lost session.
+     */
+    @Volatile
+    private var isUsbStartInFlight = false
+
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(BuildConfig.APPLICATION_ID, TetherService::class.java.name),
     )
@@ -169,7 +180,7 @@ class TetherClient {
         val binder = bound.asBinder()
         val recipient = IBinder.DeathRecipient {
             boundService = null
-            onSessionLost?.invoke()
+            if (!isUsbStartInFlight) onSessionLost?.invoke()
         }
 
         runCatching { binder.linkToDeath(recipient, 0) }
@@ -211,10 +222,38 @@ class TetherClient {
         logging: Boolean,
         vpnMode: VpnMode,
         usbTethering: UsbTethering,
+        onProgress: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
-        val bound = service()
-        verifyContract(bound)
-        bound.start(logging, vpnMode.name, usbTethering.name)
+        val mayLoseShizuku = usbTethering != UsbTethering.NEVER
+        isUsbStartInFlight = mayLoseShizuku
+        try {
+            startThroughUsbSwitch(
+                mayLoseShizuku = mayLoseShizuku,
+                start = {
+                    val bound = service()
+                    verifyContract(bound)
+                    bound.start(logging, vpnMode.name, usbTethering.name)
+                },
+                awaitShizuku = { awaitShizukuReturn() },
+                onWaiting = {
+                    SessionLog.warn(
+                        "shell process exited during start: switching the usb function " +
+                            "restarted adbd, which took Shizuku down; waiting for it to return",
+                    )
+                    onProgress(WAITING_FOR_SHIZUKU)
+                },
+            )
+        } finally {
+            isUsbStartInFlight = false
+        }
+    }
+
+    private suspend fun awaitShizukuReturn(): Boolean {
+        delay(SHIZUKU_SETTLE_MS)
+        return withTimeoutOrNull(SHIZUKU_RETURN_TIMEOUT_MS) {
+            while (ShizukuGate.currentState() !is ShizukuState.Ready) delay(SHIZUKU_POLL_MS)
+            true
+        } ?: false
     }
 
     fun setLogging(enabled: Boolean) {
@@ -222,7 +261,14 @@ class TetherClient {
     }
 
     suspend fun stop(): String = withContext(Dispatchers.IO) {
-        service().stop()
+        try {
+            service().stop()
+        } catch (death: DeadObjectException) {
+            // Stopping USB tethering switches the USB function back, which on many devices restarts
+            // adbd and takes the shell process down mid-stop. Everything it held goes with it.
+            SessionLog.info("shell process exited during stop: the usb function switch restarted adbd")
+            STOPPED_REPORT
+        }
     }
 
     suspend fun clearLog(): String? = withContext(Dispatchers.IO) {
@@ -280,5 +326,15 @@ class TetherClient {
         const val BIND_TIMEOUT_MS = 35_000L
 
         const val AVAILABILITY_TIMEOUT_MS = 10_000
+
+        const val SHIZUKU_SETTLE_MS = 1_500L
+
+        const val SHIZUKU_POLL_MS = 500L
+
+        const val SHIZUKU_RETURN_TIMEOUT_MS = 45_000L
+
+        const val WAITING_FOR_SHIZUKU = "Waiting for Shizuku to restart…"
+
+        const val STOPPED_REPORT = """{"state":"IDLE","detail":"stopped"}"""
     }
 }

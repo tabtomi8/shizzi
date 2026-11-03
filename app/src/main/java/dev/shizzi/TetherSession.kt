@@ -160,12 +160,16 @@ class TetherSession(private val context: Context) {
         val control = DownstreamControl(context)
         val types = usbDownstream.typesToStart()
         val usbReading = downstream.findTetheredDownstream(listOf(TetheringType.USB))
-        control.stopTethering(typesToRestart(types, usbReading))
 
-        val (succeeded, failed) = types
-            .associateWith(control::startTethering)
-            .entries
-            .partition { (_, outcome) -> outcome.first }
+        val usbInterfaces = usbInterfacesToCycle(types, usbReading)
+        val isUsbCycled = usbInterfaces.isNotEmpty() && untetherUsb(control, usbInterfaces)
+        val toRestart = if (isUsbCycled) types - TetheringType.USB else types
+        control.stopTethering(typesToRestart(toRestart, usbReading))
+
+        val outcomes = toRestart.associateWith(control::startTethering).toMutableMap()
+        if (isUsbCycled) outcomes[TetheringType.USB] = control.tetherInterfaces(usbInterfaces)
+
+        val (succeeded, failed) = outcomes.entries.partition { (_, outcome) -> outcome.first }
         succeeded.forEach { (type, _) -> started.add(type) }
 
         val failures = failed.map { (type, outcome) -> "${type.label} did not start (${outcome.second})" }
@@ -173,6 +177,25 @@ class TetherSession(private val context: Context) {
 
         failures.forEach(SessionLog::warn)
         return awaitDownstreamTethered(succeeded.map { it.key })
+    }
+
+    /**
+     * Takes USB interfaces that are already tethered out of service without switching the USB
+     * function. Tethering picks its upstream when the first downstream comes up, so this still
+     * lets it pick the test network, and on devices where a USB function switch restarts adbd it
+     * keeps Shizuku, and with it this process, alive.
+     */
+    private fun untetherUsb(control: DownstreamControl, interfaces: List<String>): Boolean {
+        val (didUntether, outcome) = control.untetherInterfaces(interfaces)
+        when {
+            didUntether -> SessionLog.info(
+                "usb tethering already up; cycling ${interfaces.joinToString()} " +
+                    "without switching the usb function",
+            )
+
+            else -> SessionLog.warn("could not cycle the usb interfaces ($outcome); restarting usb tethering")
+        }
+        return didUntether
     }
 
     private fun awaitDownstreamTethered(types: List<TetheringType>): Boolean {

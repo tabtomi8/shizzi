@@ -43,7 +43,7 @@ class SessionNotification(private val context: Context) {
 
     private fun bodyFor(state: SessionUiState, isStopping: Boolean): String = when {
         state.lastError.isNotEmpty() -> userFacingError(state.lastError)
-        state.status == UiStatus.LOADING -> loadingBody(isStopping)
+        state.status == UiStatus.LOADING -> loadingBody(state, isStopping)
         state.isWaitingForUsb -> "Connect over USB within $USB_GRACE_MINUTES minutes to keep sharing"
         state.status == UiStatus.CONNECTED -> connectedBody(state)
         else -> "Not sharing"
@@ -54,8 +54,11 @@ class SessionNotification(private val context: Context) {
         else -> raw
     }
 
-    private fun loadingBody(isStopping: Boolean): String =
-        if (isStopping) "Turning the hotspot off…" else "Turning the hotspot on…"
+    private fun loadingBody(state: SessionUiState, isStopping: Boolean): String = when {
+        isStopping -> "Turning the hotspot off…"
+        state.detail.isNotEmpty() -> state.detail
+        else -> "Turning the hotspot on…"
+    }
 
     private fun connectedBody(state: SessionUiState): String = when (state.clientCount) {
         0 -> "No devices connected"

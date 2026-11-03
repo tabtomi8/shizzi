@@ -32,6 +32,7 @@ class SessionService : Service() {
 
     private val internalState get() = sessionState
 
+    @Volatile
     private var isStopping = false
 
     private var reportTo: AutomationCommand? = null
@@ -86,7 +87,12 @@ class SessionService : Service() {
             val outcome = sessionLock.withLock {
                 if (attempt != generation) return@launch
                 runCatching {
-                    controller.start(settings.isLogging, settings.vpnMode, settings.usbTethering)
+                    controller.start(
+                        settings.isLogging,
+                        settings.vpnMode,
+                        settings.usbTethering,
+                        ::showStartProgress,
+                    )
                 }
             }
             if (attempt != generation) return@launch
@@ -103,6 +109,12 @@ class SessionService : Service() {
             announceOutcome()
             followStatus()
         }
+    }
+
+    /** Says what a start that is taking a while is waiting for. */
+    private fun showStartProgress(detail: String) {
+        internalState.update { current -> current.copy(detail = detail) }
+        publishState()
     }
 
     private fun followStatus() = statusPoller.follow(
@@ -159,6 +171,13 @@ class SessionService : Service() {
     }
 
     private fun handleSessionLost() {
+        if (isStopping) {
+            // A stop can end the shell process itself: stopping USB tethering switches the USB
+            // function, which on many devices restarts adbd and takes Shizuku with it. The stop
+            // flow owns the cleanup, so this is not a lost session.
+            return
+        }
+
         statusPoller.stop()
 
         isStopping = false

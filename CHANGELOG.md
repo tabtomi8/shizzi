@@ -5,6 +5,18 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **USB tethering on phones where switching the USB function restarts ADB**
+  (many Samsung and OnePlus models). The restart stops a Shizuku that was
+  started through ADB, and with it the session, so every start ended in
+  `DeadObjectException` and `binder haven't been received`. The next start then
+  undid the last one by stopping the USB tethering it found running. USB
+  tethering that is already up is now kept, with its interfaces cycled instead
+  of its function switched. A start that loses Shizuku to the switch waits for
+  it to come back and carries on, and a stop no longer reports the shell process
+  exiting as a failure. See [USB tethering and Shizuku](docs/usb-tethering.md).
+
 ## [0.5.0] - 2026-10-30
 
 Adds USB tethering, so a computer on a USB cable can share the same

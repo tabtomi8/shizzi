@@ -28,3 +28,18 @@ fun tetheringTypeOf(interfaceName: String): TetheringType? = when {
  */
 fun typesToRestart(types: List<TetheringType>, usbReading: DownstreamReading): List<TetheringType> =
     types.filter { type -> type != TetheringType.USB || usbReading != DownstreamReading.None }
+
+/**
+ * The tethered USB interfaces to cycle in place of stopping and starting USB
+ * tethering. Both switch the USB function, and on many devices that restarts
+ * adbd, which takes a Shizuku started through adbd down with it, along with the
+ * session. A USB downstream that is already up keeps its function and has its
+ * interfaces cycled instead, which still makes tethering choose its upstream
+ * afresh: it does so when the first downstream comes back.
+ */
+fun usbInterfacesToCycle(types: List<TetheringType>, usbReading: DownstreamReading): List<String> =
+    when {
+        TetheringType.USB !in types -> emptyList()
+        usbReading is DownstreamReading.Tethered -> usbReading.names
+        else -> emptyList()
+    }
