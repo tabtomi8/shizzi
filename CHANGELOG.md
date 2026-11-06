@@ -5,6 +5,8 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-06
+
 ### Fixed
 
 - **USB tethering on phones where switching the USB function restarts ADB**
@@ -204,6 +206,7 @@ First public build.
 - IPv6 was not suppressed on the downstream; v6 traffic could bypass the
   tunnel. Fixed in 0.2.0.
 
+[0.5.1]: https://github.com/tabtomi8/shizzi/releases/tag/v0.5.1
 [0.5.0]: https://github.com/carlelieser/shizzi/releases/tag/v0.5.0
 [0.4.0-rc.3]: https://github.com/carlelieser/shizzi/releases/tag/v0.4.0-rc.3
 [0.3.0]: https://github.com/carlelieser/shizzi/releases/tag/v0.3.0
