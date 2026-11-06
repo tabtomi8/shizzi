@@ -95,6 +95,9 @@ class TetherSession(private val context: Context) {
             verifyUpstream(name)
             SessionLog.info("upstream verified: $name is sole upstream")
         }
+        if (TetheringType.USB in usbDownstream.typesToStart()) {
+            started.add(TetheringType.USB)
+        }
 
         state = SessionState.ACTIVE
         activeSince = System.currentTimeMillis()
@@ -192,7 +195,10 @@ class TetherSession(private val context: Context) {
         }
 
         val (succeeded, failed) = outcomes.entries.partition { (_, outcome) -> outcome.first }
-        succeeded.forEach { (type, _) -> started.add(type) }
+        val keptUsbWithoutSwitch = usb is UsbStart.Kept || usb is UsbStart.AwaitingServing
+        succeeded.forEach { (type, _) ->
+            if (type != TetheringType.USB || !keptUsbWithoutSwitch) started.add(type)
+        }
 
         val failures = failed.map { (type, outcome) -> "${type.label} did not start (${outcome.second})" }
         check(succeeded.isNotEmpty()) { "restartDownstream: ${failures.joinToString("; ")}" }
@@ -200,7 +206,7 @@ class TetherSession(private val context: Context) {
         failures.forEach(SessionLog::warn)
         val isTethered = awaitDownstreamTethered(succeeded.map { it.key })
 
-        if (usb is UsbStart.Kept) reselectUpstream(control, name)
+        if (usb is UsbStart.Kept) reselectUpstream(name)
         return isTethered
     }
 
@@ -255,11 +261,13 @@ class TetherSession(private val context: Context) {
 
     /**
      * Makes tethering move USB that kept serving onto [name] without switching the USB function,
-     * by briefly changing Private DNS (see [reselectThroughPrivateDns]). If tethering does not
-     * move, USB tethering is restarted as a last resort, which switches the function.
+     * by briefly changing Private DNS (see [reselectThroughPrivateDns]). Both the nudge and its
+     * restore rewrite the current upstream's LinkProperties; if tethering only moves on the
+     * restore, [verifyUpstream] afterwards still catches it.
      */
-    private fun reselectUpstream(control: DownstreamControl, name: String) {
-        if (isOnlyUpstream(name)) {
+    private fun reselectUpstream(name: String) {
+        val before = liveUpstreams(name)
+        if (before.isNotEmpty() && before.all { it == name }) {
             SessionLog.info("tethering already uses $name")
             return
         }
@@ -278,17 +286,12 @@ class TetherSession(private val context: Context) {
 
         if (didMove) {
             SessionLog.info("tethering moved usb onto $name without switching the usb function")
-            return
+        } else {
+            SessionLog.warn(
+                "tethering upstream did not move during the private dns nudge " +
+                    "(was $before, now ${liveUpstreams(name)}); waiting for verifyUpstream",
+            )
         }
-
-        SessionLog.warn(
-            "tethering kept its old upstream; restarting usb tethering, " +
-                "which switches the usb function",
-        )
-        control.stopTethering(listOf(TetheringType.USB))
-        val (didStart, detail) = control.startTethering(TetheringType.USB)
-        if (!didStart) SessionLog.warn("usb tethering did not restart ($detail)")
-        awaitDownstreamTethered(listOf(TetheringType.USB))
     }
 
     private fun isOnlyUpstream(name: String): Boolean {

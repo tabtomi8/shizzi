@@ -39,14 +39,13 @@ restarted.
     brings the first downstream back up without touching the function.
   - Android 16 removed that (`TetheringManager.tether` and `untether` throw).
     Tethering also picks again when its current upstream's LinkProperties
-    change, and changing Private DNS makes Android rewrite those. So Shizzi
-    changes Private DNS for a few seconds at most, waits until tethering reports
-    the test network as its upstream, and puts the setting back. Off becomes
-    opportunistic, opportunistic becomes off, and a provider hostname only
-    changes case (`dns.google` to `DNS.GOOGLE`), so strict Private DNS stays
-    strict with the same provider. The log shows each change and its undo.
-  - If tethering still doesn't move, USB tethering is restarted, which does
-    switch the function.
+    change, and switching Private DNS into or within strict `hostname` mode
+    makes Android rewrite `LinkProperties.privateDnsServerName` immediately
+    (`off` and `opportunistic` both leave it `null`). So Shizzi switches
+    Private DNS to a provider hostname (or flips the case of an existing one,
+    e.g. `dns.google` to `DNS.GOOGLE`) for a moment, waits until tethering
+    reports the test network as its upstream, and puts the setting back. The
+    log shows each change and its undo.
 - **A function that is already set is not switched again.** On Android 16,
   asking for USB tethering while the function is already RNDIS or NCM makes
   Android switch it off and on. Android serves such a function by itself once

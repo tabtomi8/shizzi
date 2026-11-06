@@ -29,25 +29,40 @@ const val PRIVATE_DNS_DEFAULT_MODE = "private_dns_default_mode"
 const val PRIVATE_DNS_OFF = "off"
 const val PRIVATE_DNS_OPPORTUNISTIC = "opportunistic"
 const val PRIVATE_DNS_HOSTNAME = "hostname"
+const val DEFAULT_NUDGE_HOSTNAME = "dns.google"
 
 /** The Private DNS settings as `settings get global` reads them; null when unset. */
 data class PrivateDnsSetting(val mode: String?, val specifier: String?)
 
 /**
- * The Private DNS setting to hold for a moment so that the upstream's LinkProperties change, or
- * null when there is none. Each choice keeps DNS as private as it was:
+ * The Private DNS setting to hold for a moment so that the upstream's LinkProperties change.
  *
- * - Off turns opportunistic: it may use TLS for a moment, never less than before.
- * - Opportunistic turns off: opportunistic already falls back to plain DNS whenever TLS isn't
- *   available, so this is within what it allows.
- * - A provider hostname changes case only. Hostnames are case-insensitive, so it is the same
- *   provider, and DNS stays strict, but the LinkProperties compare the name as written.
+ * In AOSP `DnsManager.updatePrivateDnsStatus`, `LinkProperties.privateDnsServerName` is only
+ * populated when Private DNS is in strict `hostname` mode (`off` and `opportunistic` both leave it
+ * null, and `opportunistic` also leaves `usePrivateDns` false until a DoT server validates). So:
+ *
+ * - Off or opportunistic switches briefly to `hostname` (using the existing specifier if present,
+ *   or [DEFAULT_NUDGE_HOSTNAME]), which immediately changes `privateDnsServerName` from null to
+ *   non-null and `usePrivateDns` to true in `LinkProperties` without waiting for DNS validation.
+ * - A provider hostname with letters changes case only (`dns.google` -> `DNS.GOOGLE`): hostnames
+ *   are case-insensitive, so DNS stays strict with the same provider while `LinkProperties` sees a
+ *   new string. A specifier without letters falls back to `off` for a moment.
  */
-fun privateDnsNudgeFor(current: PrivateDnsSetting, defaultMode: String?): PrivateDnsSetting? =
+fun privateDnsNudgeFor(current: PrivateDnsSetting, defaultMode: String? = null): PrivateDnsSetting =
     when (current.mode ?: defaultMode ?: PRIVATE_DNS_OPPORTUNISTIC) {
-        PRIVATE_DNS_OFF -> current.copy(mode = PRIVATE_DNS_OPPORTUNISTIC)
-        PRIVATE_DNS_HOSTNAME -> current.specifier?.let(::flipCase)?.let { current.copy(specifier = it) }
-        else -> current.copy(mode = PRIVATE_DNS_OFF)
+        PRIVATE_DNS_HOSTNAME -> {
+            val flipped = current.specifier?.let(::flipCase)
+            if (flipped != null) {
+                current.copy(specifier = flipped)
+            } else {
+                current.copy(mode = PRIVATE_DNS_OFF)
+            }
+        }
+
+        else -> {
+            val specifier = current.specifier?.takeIf { it.isNotBlank() } ?: DEFAULT_NUDGE_HOSTNAME
+            PrivateDnsSetting(mode = PRIVATE_DNS_HOSTNAME, specifier = specifier)
+        }
     }
 
 private fun flipCase(name: String): String? {
@@ -77,12 +92,7 @@ fun reselectThroughPrivateDns(
 ): Boolean {
     val current = PrivateDnsSetting(settings.get(PRIVATE_DNS_MODE), settings.get(PRIVATE_DNS_SPECIFIER))
     val defaultMode = if (current.mode == null) settings.get(PRIVATE_DNS_DEFAULT_MODE) else null
-
     val nudge = privateDnsNudgeFor(current, defaultMode)
-    if (nudge == null) {
-        onEvent("private dns gives nothing to change (${describe(current)})")
-        return false
-    }
 
     onEvent("changing private dns for a moment (${describe(current)} -> ${describe(nudge)}) so tethering re-picks its upstream")
     try {
@@ -100,9 +110,19 @@ fun reselectThroughPrivateDns(
     }
 }
 
+/**
+ * Writes the specifier before entering `hostname` mode so `DnsManager.getPrivateDnsConfig` sees a
+ * non-empty hostname as soon as the mode observer fires, and restores the mode before clearing the
+ * specifier when leaving `hostname` mode.
+ */
 private fun apply(settings: GlobalSettings, from: PrivateDnsSetting, to: PrivateDnsSetting) {
-    if (from.mode != to.mode) settings.put(PRIVATE_DNS_MODE, to.mode)
-    if (from.specifier != to.specifier) settings.put(PRIVATE_DNS_SPECIFIER, to.specifier)
+    if (to.mode == PRIVATE_DNS_HOSTNAME) {
+        if (from.specifier != to.specifier) settings.put(PRIVATE_DNS_SPECIFIER, to.specifier)
+        if (from.mode != to.mode) settings.put(PRIVATE_DNS_MODE, to.mode)
+    } else {
+        if (from.mode != to.mode) settings.put(PRIVATE_DNS_MODE, to.mode)
+        if (from.specifier != to.specifier) settings.put(PRIVATE_DNS_SPECIFIER, to.specifier)
+    }
 }
 
 private fun describe(setting: PrivateDnsSetting): String = when (setting.mode) {
