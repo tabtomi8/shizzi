@@ -11,8 +11,10 @@ import org.json.JSONObject
  * [DeadObjectException].
  *
  * That is expected once, because USB tethering stays up afterwards, and the next start finds it
- * up and leaves the USB function alone (see [usbInterfacesToCycle]). So a start that loses its
- * shell process to the switch waits for Shizuku to come back and starts again.
+ * up and leaves the USB function alone: it cycles the USB interfaces (see [usbInterfacesToCycle]),
+ * or on Android 16, where that is gone, keeps them serving and makes tethering pick its upstream
+ * again (see [reselectThroughPrivateDns]). So a start that loses its shell process to the switch
+ * waits for Shizuku to come back and starts again.
  */
 internal const val SHIZUKU_LOST_TO_USB_SWITCH =
     "USB tethering restarted ADB, which stopped Shizuku. Start Shizuku again, then start sharing: " +

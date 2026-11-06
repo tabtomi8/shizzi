@@ -13,9 +13,13 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `DeadObjectException` and `binder haven't been received`. The next start then
   undid the last one by stopping the USB tethering it found running. USB
   tethering that is already up is now kept, with its interfaces cycled instead
-  of its function switched. A start that loses Shizuku to the switch waits for
-  it to come back and carries on, and a stop no longer reports the shell process
-  exiting as a failure. See [USB tethering and Shizuku](docs/usb-tethering.md).
+  of its function switched. On Android 16, which can no longer cycle them,
+  Shizzi changes Private DNS for a few seconds so tethering moves USB onto the
+  session, then puts the setting back, and it no longer asks again for a USB
+  function that is already set. A start that loses Shizuku to the switch waits
+  for it to come back and carries on, and a stop no longer reports the shell
+  process exiting as a failure. See
+  [USB tethering and Shizuku](docs/usb-tethering.md).
 
 ## [0.5.0] - 2026-10-30
 

@@ -32,9 +32,26 @@ restarted.
 ## What Shizzi does about it
 
 - **USB that is already up is kept.** Stopping it and starting it again would
-  switch the function twice, so its interfaces are untethered and tethered
-  again instead. Tethering chooses its upstream when the first downstream comes
-  up, so this still puts it on the test network.
+  switch the function twice. Tethering picks its upstream when its first
+  downstream comes up, so USB that was serving before the session's test
+  network existed has to be made to pick again:
+  - Up to Android 15, its interfaces are untethered and tethered again, which
+    brings the first downstream back up without touching the function.
+  - Android 16 removed that (`TetheringManager.tether` and `untether` throw).
+    Tethering also picks again when its current upstream's LinkProperties
+    change, and changing Private DNS makes Android rewrite those. So Shizzi
+    changes Private DNS for a few seconds at most, waits until tethering reports
+    the test network as its upstream, and puts the setting back. Off becomes
+    opportunistic, opportunistic becomes off, and a provider hostname only
+    changes case (`dns.google` to `DNS.GOOGLE`), so strict Private DNS stays
+    strict with the same provider. The log shows each change and its undo.
+  - If tethering still doesn't move, USB tethering is restarted, which does
+    switch the function.
+- **A function that is already set is not switched again.** On Android 16,
+  asking for USB tethering while the function is already RNDIS or NCM makes
+  Android switch it off and on. Android serves such a function by itself once
+  the computer has set it up, so Shizzi waits for that instead. The watchdog
+  does the same for up to a minute before it asks again.
 - **A start that loses Shizuku waits for it.** The first USB start on such a
   phone does switch the function. Shizzi waits up to 45 seconds for Shizuku to
   come back, then starts again. USB tethering is up by then, so the second start

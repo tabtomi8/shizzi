@@ -12,6 +12,9 @@ class UsbDownstream(
 
     private val reconnect = UsbReconnect(onEvent)
 
+    /** When the watchdog first found the function set but not yet served; see [isServingPending]. */
+    private var functionPendingSince: Long? = null
+
     /** Only Always waits on USB; Auto keeps sharing over the hotspot. */
     val isWaitingForUsb: Boolean
         get() = setting == UsbTethering.ALWAYS && reconnect.isWaiting
@@ -50,7 +53,8 @@ class UsbDownstream(
 
         val isTethered = usbReading is DownstreamReading.Tethered
         val isCableConnected = !isTethered && link.isHostConnected() == true
-        if (reconnect.shouldRestart(isTethered, isCableConnected, now)) {
+        val isServingPending = isServingPending(now, isCableConnected)
+        if (reconnect.shouldRestart(isTethered, isCableConnected && !isServingPending, now)) {
             val (didStart, startDetail) = link.startTethering()
             if (!didStart) onEvent("usb tethering did not restart ($startDetail)")
         }
@@ -63,7 +67,29 @@ class UsbDownstream(
         return DownstreamHealth.Awaiting
     }
 
+    /**
+     * True while the USB function is already RNDIS or NCM with a host attached, for up to
+     * [FUNCTION_PENDING_GRACE_MS]. Android serves such a function by itself once the host
+     * configures it, which can take a while. Asking for USB tethering again meanwhile is no help,
+     * and Android 16 answers it by switching the function off and on, which on many phones
+     * restarts adbd and Shizuku with it. Past the grace period the restart is asked for anyway.
+     */
+    private fun isServingPending(now: Long, isCableConnected: Boolean): Boolean {
+        if (!isCableConnected || link.isTetheringFunctionOn() != true) {
+            functionPendingSince = null
+            return false
+        }
+
+        val since = functionPendingSince ?: now.also {
+            functionPendingSince = it
+            onEvent("usb function already set; waiting for android to serve it")
+        }
+        return now - since < FUNCTION_PENDING_GRACE_MS
+    }
+
     companion object {
         const val NO_USB_CABLE = "Failed to start. USB connection required."
+
+        const val FUNCTION_PENDING_GRACE_MS = 60_000L
     }
 }

@@ -89,7 +89,7 @@ class TetherSession(private val context: Context) {
         followVpn(group)
 
         preferTestNetworks()
-        val isTethered = restartDownstream()
+        val isTethered = restartDownstream(name)
 
         if (isTethered || !usbDownstream.canStartUntethered) {
             verifyUpstream(name)
@@ -155,19 +155,41 @@ class TetherSession(private val context: Context) {
         api.setPreferTestNetworks(true)
     }
 
+    /** How a start brings USB up; see [planUsb]. */
+    private sealed interface UsbStart {
+        /** USB is not part of this start. */
+        object NotRequested : UsbStart
+
+        /** Stopped if it may be up, then started, which switches the USB function. */
+        object Restart : UsbStart
+
+        /** Untethered in place; tethered again once the other downstreams are back. */
+        class Cycled(val interfaces: List<String>) : UsbStart
+
+        /** Left serving on the old upstream; tethering is then made to pick again. */
+        object Kept : UsbStart
+
+        /** The function is already set, and Android serves it by itself once the host is ready. */
+        object AwaitingServing : UsbStart
+    }
+
     /** True once a started downstream is tethered. */
-    private fun restartDownstream(): Boolean {
+    private fun restartDownstream(name: String): Boolean {
         val control = DownstreamControl(context)
         val types = usbDownstream.typesToStart()
         val usbReading = downstream.findTetheredDownstream(listOf(TetheringType.USB))
+        val usb = planUsb(control, types, usbReading)
 
-        val usbInterfaces = usbInterfacesToCycle(types, usbReading)
-        val isUsbCycled = usbInterfaces.isNotEmpty() && untetherUsb(control, usbInterfaces)
-        val toRestart = if (isUsbCycled) types - TetheringType.USB else types
+        val toRestart = if (usb is UsbStart.Restart) types else types - TetheringType.USB
         control.stopTethering(typesToRestart(toRestart, usbReading))
 
         val outcomes = toRestart.associateWith(control::startTethering).toMutableMap()
-        if (isUsbCycled) outcomes[TetheringType.USB] = control.tetherInterfaces(usbInterfaces)
+        when (usb) {
+            is UsbStart.Cycled -> outcomes[TetheringType.USB] = control.tetherInterfaces(usb.interfaces)
+            UsbStart.Kept -> outcomes[TetheringType.USB] = true to "kept serving"
+            UsbStart.AwaitingServing -> outcomes[TetheringType.USB] = true to "function already set"
+            UsbStart.NotRequested, UsbStart.Restart -> Unit
+        }
 
         val (succeeded, failed) = outcomes.entries.partition { (_, outcome) -> outcome.first }
         succeeded.forEach { (type, _) -> started.add(type) }
@@ -176,15 +198,45 @@ class TetherSession(private val context: Context) {
         check(succeeded.isNotEmpty()) { "restartDownstream: ${failures.joinToString("; ")}" }
 
         failures.forEach(SessionLog::warn)
-        return awaitDownstreamTethered(succeeded.map { it.key })
+        val isTethered = awaitDownstreamTethered(succeeded.map { it.key })
+
+        if (usb is UsbStart.Kept) reselectUpstream(control, name)
+        return isTethered
     }
 
     /**
-     * Takes USB interfaces that are already tethered out of service without switching the USB
-     * function. Tethering picks its upstream when the first downstream comes up, so this still
-     * lets it pick the test network, and on devices where a USB function switch restarts adbd it
-     * keeps Shizuku, and with it this process, alive.
+     * Every USB function switch can restart adbd, and Shizuku and this process with it, so USB is
+     * only switched when nothing else will do:
+     *
+     * - USB that is already serving has its interfaces cycled, which still makes tethering pick
+     *   its upstream afresh when the first downstream comes back. Android 16 removed that, and
+     *   there USB is kept and tethering is made to pick again (see [reselectUpstream]).
+     * - On Android 16 a function that is already RNDIS or NCM is not asked for again: Android
+     *   serves it by itself once the host is ready, and asking again makes it restart the function.
+     *   This is the usual state right after a start that lost Shizuku to the switch.
      */
+    private fun planUsb(
+        control: DownstreamControl,
+        types: List<TetheringType>,
+        usbReading: DownstreamReading,
+    ): UsbStart {
+        if (TetheringType.USB !in types) return UsbStart.NotRequested
+
+        val interfaces = usbInterfacesToCycle(types, usbReading)
+        if (interfaces.isNotEmpty()) {
+            return if (untetherUsb(control, interfaces)) UsbStart.Cycled(interfaces) else UsbStart.Kept
+        }
+
+        val isServingPending = usbReading == DownstreamReading.None &&
+            Build.VERSION.SDK_INT > ANDROID_15_SDK &&
+            usbLink.isTetheringFunctionOn() == true &&
+            usbLink.isHostConnected() != false
+        if (!isServingPending) return UsbStart.Restart
+
+        SessionLog.info("usb function already set; leaving it to android to serve instead of switching it again")
+        return UsbStart.AwaitingServing
+    }
+
     private fun untetherUsb(control: DownstreamControl, interfaces: List<String>): Boolean {
         val (didUntether, outcome) = control.untetherInterfaces(interfaces)
         when {
@@ -193,9 +245,64 @@ class TetherSession(private val context: Context) {
                     "without switching the usb function",
             )
 
-            else -> SessionLog.warn("could not cycle the usb interfaces ($outcome); restarting usb tethering")
+            else -> SessionLog.info(
+                "usb tethering already up and cannot be cycled in place ($outcome); " +
+                    "keeping it up",
+            )
         }
         return didUntether
+    }
+
+    /**
+     * Makes tethering move USB that kept serving onto [name] without switching the USB function,
+     * by briefly changing Private DNS (see [reselectThroughPrivateDns]). If tethering does not
+     * move, USB tethering is restarted as a last resort, which switches the function.
+     */
+    private fun reselectUpstream(control: DownstreamControl, name: String) {
+        if (isOnlyUpstream(name)) {
+            SessionLog.info("tethering already uses $name")
+            return
+        }
+
+        val didMove = runCatching {
+            reselectThroughPrivateDns(
+                settings = ShellGlobalSettings(),
+                awaitMoved = { awaitOnlyUpstream(name) },
+                onEvent = SessionLog::info,
+                onRestoreFailed = SessionLog::error,
+            )
+        }.getOrElse { failure ->
+            SessionLog.warn("could not make tethering re-pick its upstream: ${failure.message}")
+            false
+        }
+
+        if (didMove) {
+            SessionLog.info("tethering moved usb onto $name without switching the usb function")
+            return
+        }
+
+        SessionLog.warn(
+            "tethering kept its old upstream; restarting usb tethering, " +
+                "which switches the usb function",
+        )
+        control.stopTethering(listOf(TetheringType.USB))
+        val (didStart, detail) = control.startTethering(TetheringType.USB)
+        if (!didStart) SessionLog.warn("usb tethering did not restart ($detail)")
+        awaitDownstreamTethered(listOf(TetheringType.USB))
+    }
+
+    private fun isOnlyUpstream(name: String): Boolean {
+        val observed = liveUpstreams(name)
+        return observed.isNotEmpty() && observed.all { it == name }
+    }
+
+    private fun awaitOnlyUpstream(name: String): Boolean {
+        val deadline = System.currentTimeMillis() + RESELECT_SETTLE_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (isOnlyUpstream(name)) return true
+            Thread.sleep(RESELECT_POLL_MS)
+        }
+        return isOnlyUpstream(name)
     }
 
     private fun awaitDownstreamTethered(types: List<TetheringType>): Boolean {
@@ -318,5 +425,11 @@ class TetherSession(private val context: Context) {
 
         const val DOWNSTREAM_SETTLE_MS = 10_000L
         const val DOWNSTREAM_POLL_MS = 500L
+
+        const val RESELECT_SETTLE_MS = 5_000L
+        const val RESELECT_POLL_MS = 250L
+
+        /** Build.VERSION_CODES.VANILLA_ICE_CREAM; Android 16 is anything above it. */
+        const val ANDROID_15_SDK = 35
     }
 }

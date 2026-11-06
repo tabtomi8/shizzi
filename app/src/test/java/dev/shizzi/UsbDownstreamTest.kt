@@ -8,10 +8,15 @@ import org.junit.Test
 
 class UsbDownstreamTest {
 
-    private class FakeUsbLink(var isConnected: Boolean? = false) : UsbLink {
+    private class FakeUsbLink(
+        var isConnected: Boolean? = false,
+        var isFunctionOn: Boolean? = null,
+    ) : UsbLink {
         var startCount = 0
 
         override fun isHostConnected(): Boolean? = isConnected
+
+        override fun isTetheringFunctionOn(): Boolean? = isFunctionOn
 
         override fun startTethering(): Pair<Boolean, String> {
             startCount++
@@ -125,6 +130,49 @@ class UsbDownstreamTest {
         val usb = UsbDownstream(UsbTethering.ALWAYS, link)
 
         assertEquals(DownstreamHealth.Awaiting, usb.check(0, DownstreamReading.None))
+        assertEquals(1, link.startCount)
+    }
+
+    @Test
+    fun `leaves a usb function that is already set for android to serve`() {
+        val link = FakeUsbLink(isConnected = true, isFunctionOn = true)
+        val usb = UsbDownstream(UsbTethering.ALWAYS, link)
+
+        assertEquals(DownstreamHealth.Awaiting, usb.check(0, DownstreamReading.None))
+        assertEquals(DownstreamHealth.Awaiting, usb.check(30_000, DownstreamReading.None))
+        assertEquals(0, link.startCount)
+    }
+
+    @Test
+    fun `restarts usb tethering once a set function stays unserved past the grace period`() {
+        val link = FakeUsbLink(isConnected = true, isFunctionOn = true)
+        val usb = UsbDownstream(UsbTethering.ALWAYS, link)
+
+        usb.check(0, DownstreamReading.None)
+        usb.check(UsbDownstream.FUNCTION_PENDING_GRACE_MS, DownstreamReading.None)
+
+        assertEquals(1, link.startCount)
+    }
+
+    @Test
+    fun `starts the grace period over once usb was served`() {
+        val link = FakeUsbLink(isConnected = true, isFunctionOn = true)
+        val usb = UsbDownstream(UsbTethering.ALWAYS, link)
+
+        usb.check(0, DownstreamReading.None)
+        usb.check(10_000, DownstreamReading.Tethered(listOf("rndis0")))
+        usb.check(UsbDownstream.FUNCTION_PENDING_GRACE_MS, DownstreamReading.None)
+
+        assertEquals(0, link.startCount)
+    }
+
+    @Test
+    fun `restarts usb tethering when the function cannot be read`() {
+        val link = FakeUsbLink(isConnected = true, isFunctionOn = null)
+        val usb = UsbDownstream(UsbTethering.ALWAYS, link)
+
+        usb.check(0, DownstreamReading.None)
+
         assertEquals(1, link.startCount)
     }
 }

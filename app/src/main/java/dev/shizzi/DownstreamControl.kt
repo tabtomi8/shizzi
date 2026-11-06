@@ -92,26 +92,38 @@ class DownstreamControl(private val context: Context) {
 
         val rejected = interfaces
             .map { name -> name to callOnInterface(method, name, isRetriedWhileBusy) }
-            .filterNot { (_, code) -> isAccepted(code) }
+            .filterNot { (_, outcome) -> outcome.getOrNull().let { it != null && isAccepted(it) } }
 
         return when {
             rejected.isEmpty() -> true to "$methodName ${interfaces.joinToString()} accepted"
-            else -> false to rejected.joinToString("; ") { (name, code) ->
-                "$methodName $name: ${describeTetherError(code)}"
+            else -> false to rejected.joinToString("; ") { (name, outcome) ->
+                "$methodName $name: ${describeInterfaceCall(outcome)}"
             }
         }
     }
+
+    /**
+     * Android 16 dropped tethering a single interface: TetheringManager.tether and untether
+     * throw UnsupportedOperationException there, which is reported as such.
+     */
+    private fun describeInterfaceCall(outcome: Result<Int?>): String = outcome.fold(
+        onSuccess = ::describeTetherError,
+        onFailure = { failure ->
+            val cause = (failure as? java.lang.reflect.InvocationTargetException)?.cause ?: failure
+            "${cause.javaClass.simpleName}: ${cause.message}"
+        },
+    )
 
     private fun callOnInterface(
         method: java.lang.reflect.Method,
         name: String,
         isRetriedWhileBusy: Boolean,
-    ): Int? {
+    ): Result<Int?> {
         val deadline = System.currentTimeMillis() + INTERFACE_BUSY_MS
         while (true) {
-            val code = runCatching { method.invoke(tetheringManager, name) as? Int }.getOrNull()
-            val isBusy = code == TETHER_ERROR_UNAVAIL_IFACE
-            if (!isRetriedWhileBusy || !isBusy || System.currentTimeMillis() >= deadline) return code
+            val outcome = runCatching { method.invoke(tetheringManager, name) as? Int }
+            val isBusy = outcome.getOrNull() == TETHER_ERROR_UNAVAIL_IFACE
+            if (!isRetriedWhileBusy || !isBusy || System.currentTimeMillis() >= deadline) return outcome
             Thread.sleep(INTERFACE_POLL_MS)
         }
     }

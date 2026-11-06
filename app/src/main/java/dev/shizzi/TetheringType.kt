@@ -35,7 +35,9 @@ fun typesToRestart(types: List<TetheringType>, usbReading: DownstreamReading): L
  * adbd, which takes a Shizuku started through adbd down with it, along with the
  * session. A USB downstream that is already up keeps its function and has its
  * interfaces cycled instead, which still makes tethering choose its upstream
- * afresh: it does so when the first downstream comes back.
+ * afresh: it does so when the first downstream comes back. Android 16 can no
+ * longer cycle an interface; there the session keeps USB up and makes
+ * tethering choose again another way (see [reselectThroughPrivateDns]).
  */
 fun usbInterfacesToCycle(types: List<TetheringType>, usbReading: DownstreamReading): List<String> =
     when {
